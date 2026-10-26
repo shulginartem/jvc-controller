@@ -1,0 +1,603 @@
+name: Build JVC Controller APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 2. Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 3. Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: 4. Generate Android Project Files
+        run: |
+          mkdir -p app/src/main/java/com/example/jvccontroller
+
+          cat << 'EOF' > settings.gradle
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "JvcController"
+          include(":app")
+          EOF
+
+          cat << 'EOF' > build.gradle
+          plugins {
+              id 'com.android.application' version '8.5.0' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
+          }
+          EOF
+
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          EOF
+
+          cat << 'EOF' > app/build.gradle
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+
+          android {
+              namespace 'com.example.jvccontroller'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.example.jvccontroller"
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+
+              buildFeatures {
+                  compose true
+              }
+
+              composeOptions {
+                  kotlinCompilerExtensionVersion '1.5.14'
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.core:core-ktx:1.13.1'
+              implementation 'androidx.activity:activity-compose:1.9.0'
+              implementation platform('androidx.compose:compose-bom:2024.06.00')
+              implementation 'androidx.compose.ui:ui'
+              implementation 'androidx.compose.material3:material3'
+              implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.BLUETOOTH" />
+              <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+              <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+              <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+              <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+
+              <application
+                  android:allowBackup="true"
+                  android:label="JVC KD-X33MBT"
+                  android:supportsRtl="true"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/example/jvccontroller/MainActivity.kt
+          @file:OptIn(ExperimentalMaterial3Api::class)
+          package com.example.jvccontroller
+
+          import android.Manifest
+          import android.annotation.SuppressLint
+          import android.bluetooth.BluetoothManager
+          import android.bluetooth.BluetoothSocket
+          import android.content.Context
+          import android.content.pm.PackageManager
+          import android.hardware.usb.UsbDeviceConnection
+          import android.hardware.usb.UsbManager
+          import android.os.Build
+          import android.os.Bundle
+          import android.widget.Toast
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.rememberLauncherForActivityResult
+          import androidx.activity.compose.setContent
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.core.content.ContextCompat
+          import kotlinx.coroutines.*
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.IOException
+          import java.io.OutputStream
+          import java.util.UUID
+          import kotlin.math.roundToInt
+
+          fun pkt(vararg b: Int): ByteArray = ByteArray(b.size) { b[it].toByte() }
+
+          class JvcState {
+              var subOn by mutableStateOf(true)
+              var subLvl by mutableFloatStateOf(0f)
+              var fader by mutableFloatStateOf(0f)
+              var balance by mutableFloatStateOf(0f)
+              var bassBoost by mutableIntStateOf(0)
+              var loudness by mutableIntStateOf(0)
+              var k2Tech by mutableStateOf(true)
+
+              var is3Way by mutableStateOf(false)
+              var twFrq by mutableFloatStateOf(3f)
+              var twGain by mutableFloatStateOf(0f)
+              var fHpf by mutableFloatStateOf(6f)
+              var fSlope by mutableIntStateOf(1)
+              var fGain by mutableFloatStateOf(0f)
+              var rHpf by mutableFloatStateOf(6f)
+              var rSlope by mutableIntStateOf(1)
+              var rGain by mutableFloatStateOf(0f)
+              var swLpf by mutableFloatStateOf(6f)
+              var swSlope by mutableIntStateOf(2)
+              var swPhaseRev by mutableStateOf(false)
+              var swGain by mutableFloatStateOf(0f)
+
+              val eq = mutableStateListOf(*Array(13) { 0f })
+              var bassExt by mutableStateOf(false)
+              var qIdx by mutableIntStateOf(0)
+              val dtaCm = mutableStateListOf(0f, 0f, 0f, 0f, 0f)
+
+              var dimmerAuto by mutableStateOf(true)
+              var brightDay by mutableFloatStateOf(31f)
+              var brightNight by mutableFloatStateOf(12f)
+              var scrollOnce by mutableStateOf(true)
+              var demoOff by mutableStateOf(true)
+              var keyBeep by mutableStateOf(true)
+              var srcAux by mutableStateOf(true)
+              var srcAm by mutableStateOf(false)
+
+              fun toJson(): String = JSONObject().apply {
+                  put("subOn", subOn); put("subLvl", subLvl.toDouble())
+                  put("fader", fader.toDouble()); put("balance", balance.toDouble())
+                  put("bassBoost", bassBoost); put("loudness", loudness); put("k2Tech", k2Tech)
+                  put("is3Way", is3Way); put("twFrq", twFrq.toDouble()); put("twGain", twGain.toDouble())
+                  put("fHpf", fHpf.toDouble()); put("fSlope", fSlope); put("fGain", fGain.toDouble())
+                  put("rHpf", rHpf.toDouble()); put("rSlope", rSlope); put("rGain", rGain.toDouble())
+                  put("swLpf", swLpf.toDouble()); put("swSlope", swSlope)
+                  put("swPhaseRev", swPhaseRev); put("swGain", swGain.toDouble())
+                  put("bassExt", bassExt); put("qIdx", qIdx)
+                  put("dimmerAuto", dimmerAuto); put("brightDay", brightDay.toDouble())
+                  put("brightNight", brightNight.toDouble()); put("scrollOnce", scrollOnce)
+                  put("demoOff", demoOff); put("keyBeep", keyBeep)
+                  put("srcAux", srcAux); put("srcAm", srcAm)
+                  put("eq", JSONArray().also { a -> eq.forEach { a.put(it.toDouble()) } })
+                  put("dta", JSONArray().also { a -> dtaCm.forEach { a.put(it.toDouble()) } })
+              }.toString()
+
+              fun fromJson(s: String) {
+                  val j = JSONObject(s)
+                  subOn = j.optBoolean("subOn", true); subLvl = j.optDouble("subLvl", 0.0).toFloat()
+                  fader = j.optDouble("fader", 0.0).toFloat(); balance = j.optDouble("balance", 0.0).toFloat()
+                  bassBoost = j.optInt("bassBoost", 0); loudness = j.optInt("loudness", 0)
+                  k2Tech = j.optBoolean("k2Tech", true); is3Way = j.optBoolean("is3Way", false)
+                  twFrq = j.optDouble("twFrq", 3.0).toFloat(); twGain = j.optDouble("twGain", 0.0).toFloat()
+                  fHpf = j.optDouble("fHpf", 6.0).toFloat(); fSlope = j.optInt("fSlope", 1)
+                  fGain = j.optDouble("fGain", 0.0).toFloat(); rHpf = j.optDouble("rHpf", 6.0).toFloat()
+                  rSlope = j.optInt("rSlope", 1); rGain = j.optDouble("rGain", 0.0).toFloat()
+                  swLpf = j.optDouble("swLpf", 6.0).toFloat(); swSlope = j.optInt("swSlope", 2)
+                  swPhaseRev = j.optBoolean("swPhaseRev", false); swGain = j.optDouble("swGain", 0.0).toFloat()
+                  bassExt = j.optBoolean("bassExt", false); qIdx = j.optInt("qIdx", 0)
+                  dimmerAuto = j.optBoolean("dimmerAuto", true)
+                  brightDay = j.optDouble("brightDay", 31.0).toFloat()
+                  brightNight = j.optDouble("brightNight", 12.0).toFloat()
+                  scrollOnce = j.optBoolean("scrollOnce", true)
+                  demoOff = j.optBoolean("demoOff", true); keyBeep = j.optBoolean("keyBeep", true)
+                  srcAux = j.optBoolean("srcAux", true); srcAm = j.optBoolean("srcAm", false)
+                  j.optJSONArray("eq")?.let { a -> for (i in 0 until minOf(13, a.length())) eq[i] = a.getDouble(i).toFloat() }
+                  j.optJSONArray("dta")?.let { a -> for (i in 0 until minOf(5, a.length())) dtaCm[i] = a.getDouble(i).toFloat() }
+              }
+          }
+
+          class JvcConn(private val ctx: Context) {
+              private val sppUuid = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+              private var btSocket: BluetoothSocket? = null
+              private var btOut: OutputStream? = null
+              private var usbConn: UsbDeviceConnection? = null
+              private val prefs = ctx.getSharedPreferences("JvcPresets", Context.MODE_PRIVATE)
+
+              var mode by mutableStateOf("NONE")
+              var status by mutableStateOf("Автономный режим (пресеты доступны)")
+
+              @SuppressLint("MissingPermission")
+              fun pairedDevices() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                  ContextCompat.checkSelfPermission(ctx, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+              ) emptyList() else (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter?.bondedDevices?.toList() ?: emptyList()
+
+              @SuppressLint("MissingPermission")
+              fun connectBt(name: String, addr: String) {
+                  status = "Подключение по BT к $name..."
+                  CoroutineScope(Dispatchers.IO).launch {
+                      try {
+                          disconnect()
+                          val dev = (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter.getRemoteDevice(addr)
+                          val sock = dev.createRfcommSocketToServiceRecord(sppUuid)
+                          sock.connect()
+                          btSocket = sock; btOut = sock.outputStream
+                          withContext(Dispatchers.Main) { mode = "BT"; status = "Подключено по BT: $name" }
+                      } catch (e: IOException) {
+                          withContext(Dispatchers.Main) { mode = "NONE"; status = "BT недоступен (работаем с пресетами)" }
+                      }
+                  }
+              }
+
+              fun connectUsb() {
+                  val um = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
+                  val dev = um.deviceList.values.firstOrNull()
+                  if (dev == null) {
+                      status = "USB-устройство не найдено (проверьте кабель)"
+                      Toast.makeText(ctx, "Магнитола по USB не найдена", Toast.LENGTH_SHORT).show()
+                      return
+                  }
+                  if (um.hasPermission(dev)) {
+                      usbConn = um.openDevice(dev)
+                      mode = if (usbConn != null) "USB" else "NONE"
+                      status = if (usbConn != null) "Подключено по USB: ${dev.productName ?: "JVC"}" else "Ошибка открытия USB"
+                  } else {
+                      status = "Переподключите USB-кабель и разрешите доступ"
+                  }
+              }
+
+              fun send(cmd: String, bytes: ByteArray) {
+                  if (mode == "BT") CoroutineScope(Dispatchers.IO).launch {
+                      try { btOut?.write(bytes); btOut?.flush() } catch (_: IOException) {
+                          withContext(Dispatchers.Main) { mode = "NONE"; status = "Связь BT прервалась" }
+                      }
+                  } else if (mode == "USB") CoroutineScope(Dispatchers.IO).launch {
+                      usbConn?.controlTransfer(0x40, 0x01, 0, 0, bytes, bytes.size, 500)
+                  }
+              }
+
+              fun disconnect() {
+                  try { btSocket?.close(); usbConn?.close() } catch (_: Exception) {}
+                  mode = "NONE"; status = "Отключено"
+              }
+
+              fun savePreset(slot: Int, st: JvcState) {
+                  prefs.edit().putString("slot_$slot", st.toJson()).apply()
+                  Toast.makeText(ctx, "Пресет $slot сохранен в телефон!", Toast.LENGTH_SHORT).show()
+              }
+
+              fun loadPreset(slot: Int, st: JvcState) {
+                  val s = prefs.getString("slot_$slot", null)
+                  if (s != null) {
+                      st.fromJson(s)
+                      Toast.makeText(ctx, "Пресет $slot загружен!", Toast.LENGTH_SHORT).show()
+                  } else Toast.makeText(ctx, "Слот $slot пока пуст", Toast.LENGTH_SHORT).show()
+              }
+          }
+
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContent {
+                      MaterialTheme(
+                          colorScheme = darkColorScheme(
+                              primary = Color(0xFF29B6F6),
+                              background = Color(0xFF101214),
+                              surface = Color(0xFF1C1F24)
+                          )
+                      ) {
+                          Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                              JvcMainApp()
+                          }
+                      }
+                  }
+              }
+          }
+
+          @SuppressLint("MissingPermission")
+          @Composable
+          fun JvcMainApp() {
+              val ctx = LocalContext.current
+              val conn = remember { JvcConn(ctx) }
+              val st = remember { JvcState() }
+              var showBtDialog by remember { mutableStateOf(false) }
+              var mainTab by remember { mutableIntStateOf(0) }
+
+              val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}
+              LaunchedEffect(Unit) {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                      permLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN))
+                  }
+              }
+
+              Column(modifier = Modifier.fillMaxSize().systemBarsPadding()) {
+                  Card(
+                      modifier = Modifier.fillMaxWidth().padding(12.dp),
+                      colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                      shape = RoundedCornerShape(12.dp)
+                  ) {
+                      Column(modifier = Modifier.padding(12.dp)) {
+                          Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                              Column(modifier = Modifier.weight(1f)) {
+                                  Text("JVC KD-X33MBT Control", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                  Text(conn.status, fontSize = 12.sp, color = if (conn.mode != "NONE") Color(0xFF66BB6A) else Color.LightGray)
+                              }
+                              if (conn.mode != "NONE") OutlinedButton(onClick = { conn.disconnect() }) { Text("Откл.") }
+                          }
+                          if (conn.mode == "NONE") {
+                              Spacer(Modifier.height(8.dp))
+                              Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                  Button(onClick = { showBtDialog = true }, modifier = Modifier.weight(1f)) { Text("Подключить BT") }
+                                  OutlinedButton(onClick = { conn.connectUsb() }, modifier = Modifier.weight(1f)) { Text("Подключить USB") }
+                              }
+                          }
+                      }
+                  }
+
+                  TabRow(selectedTabIndex = mainTab, containerColor = MaterialTheme.colorScheme.surface) {
+                      listOf("1. Настройки звука", "2. Настройки магнитолы").forEachIndexed { i, t ->
+                          Tab(selected = mainTab == i, onClick = { mainTab = i }, text = { Text(t, fontWeight = FontWeight.Bold) })
+                      }
+                  }
+
+                  Box(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                      if (mainTab == 0) SoundTab(conn, st) else SystemTab(conn, st)
+                  }
+              }
+
+              if (showBtDialog) {
+                  val devs = conn.pairedDevices()
+                  AlertDialog(
+                      onDismissRequest = { showBtDialog = false },
+                      title = { Text("Выберите магнитолу JVC") },
+                      text = {
+                          if (devs.isEmpty()) Text("Нет сопряженных устройств. Сначала подключите магнитолу в настройках Bluetooth телефона.")
+                          else LazyColumn {
+                              items(devs.size) { i ->
+                                  val d = devs[i]
+                                  TextButton(onClick = { conn.connectBt(d.name ?: "JVC", d.address); showBtDialog = false }) {
+                                      Text("${d.name ?: "Устройство"} (${d.address})")
+                                  }
+                              }
+                          }
+                      },
+                      confirmButton = { TextButton(onClick = { showBtDialog = false }) { Text("Закрыть") } }
+                  )
+              }
+          }
+
+          @Composable
+          fun SoundTab(conn: JvcConn, st: JvcState) {
+              val freqs = listOf("THROUGH", "30 Гц", "40 Гц", "50 Гц", "60 Гц", "70 Гц", "80 Гц", "90 Гц", "100 Гц", "120 Гц", "150 Гц", "180 Гц", "220 Гц", "250 Гц")
+              val twFreqs = listOf("1 кГц", "1.6 кГц", "2.5 кГц", "4 кГц", "5 кГц", "6.3 кГц", "8 кГц", "10 кГц", "12.5 кГц")
+              val slopes = listOf("-6 дБ", "-12 дБ", "-18 дБ", "-24 дБ")
+              val eqNames = listOf("62.5 Гц", "100 Гц", "160 Гц", "250 Гц", "400 Гц", "630 Гц", "1 кГц", "1.6 кГц", "2.5 кГц", "4 кГц", "6.3 кГц", "10 кГц", "16 кГц")
+              val dtaNames = listOf("Фронт Левый (FL)", "Фронт Правый (FR)", "Тыл Левый (RL)", "Тыл Правый (RR)", "Сабвуфер (SUB-W)")
+
+              var subTab by remember { mutableIntStateOf(0) }
+              Column(modifier = Modifier.fillMaxSize()) {
+                  ScrollableTabRow(selectedTabIndex = subTab, containerColor = Color.Transparent, edgePadding = 0.dp) {
+                      listOf("Пресеты & База", "Кроссовер", "Эквалайзер (13)", "Задержки (DTA)").forEachIndexed { i, title ->
+                          FilterChip(selected = subTab == i, onClick = { subTab = i }, label = { Text(title) }, modifier = Modifier.padding(end = 6.dp))
+                      }
+                  }
+                  Spacer(Modifier.height(8.dp))
+                  LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                      when (subTab) {
+                          0 -> {
+                              item {
+                                  CardBlock("Мои пресеты в памяти телефона") {
+                                      for (slot in 1..3) {
+                                          Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                              Button(onClick = { conn.loadPreset(slot, st) }, modifier = Modifier.weight(1f)) { Text("Включить Пресет $slot") }
+                                              OutlinedButton(onClick = { conn.savePreset(slot, st) }) { Text("Сохранить в $slot") }
+                                          }
+                                      }
+                                  }
+                              }
+                              item {
+                                  CardBlock("Сабвуфер, Баланс и Улучшения") {
+                                      ToggleRow("Выход сабвуфера (SUB-W)", st.subOn) { st.subOn = it; conn.send("SUB_ON", pkt(0x01, if (it) 1 else 0)) }
+                                      if (st.subOn) SlideRow("Уровень сабвуфера", st.subLvl, -50f..10f, "${st.subLvl.roundToInt()} дБ") { st.subLvl = it; conn.send("SUB_LVL", pkt(0x02, it.roundToInt())) }
+                                      SlideRow("Фейдер (Тыл R <-> Фронт F)", st.fader, -15f..15f, "${st.fader.roundToInt()}") { st.fader = it; conn.send("FADER", pkt(0x03, it.roundToInt())) }
+                                      SlideRow("Баланс (Лево L <-> Право R)", st.balance, -15f..15f, "${st.balance.roundToInt()}") { st.balance = it; conn.send("BAL", pkt(0x04, it.roundToInt())) }
+                                      SlideRow("Усиление баса (BASS BOOST)", st.bassBoost.toFloat(), 0f..5f, "LV${st.bassBoost}") { st.bassBoost = it.roundToInt(); conn.send("BASS", pkt(0x05, st.bassBoost)) }
+                                      SlideRow("Тонкомпенсация (LOUDNESS)", st.loudness.toFloat(), 0f..2f, "LV${st.loudness}") { st.loudness = it.roundToInt(); conn.send("LOUD", pkt(0x06, st.loudness)) }
+                                      ToggleRow("Технология K2", st.k2Tech) { st.k2Tech = it; conn.send("K2", pkt(0x07, if (it) 1 else 0)) }
+                                  }
+                              }
+                          }
+                          1 -> {
+                              item {
+                                  CardBlock("Режим кроссовера (X'OVER)") {
+                                      ToggleRow(if (st.is3Way) "Режим: 3-Way (Поканальный)" else "Режим: 2-Way (Стандартный)", st.is3Way) { st.is3Way = it; conn.send("XMODE", pkt(0x15, if (it) 1 else 0)) }
+                                  }
+                              }
+                              item {
+                                  CardBlock("Твитеры (FRONT TW)") {
+                                      SlideRow("Частота среза (FRQ)", st.twFrq, 0f..(twFreqs.size - 1).toFloat(), twFreqs[st.twFrq.roundToInt()]) { st.twFrq = it; conn.send("TW_F", pkt(0x30, it.roundToInt())) }
+                                      SlideRow("Уровень (GAIN)", st.twGain, -8f..0f, "${st.twGain.roundToInt()} дБ") { st.twGain = it; conn.send("TW_G", pkt(0x31, it.roundToInt())) }
+                                  }
+                              }
+                              item {
+                                  CardBlock("Фронтальные динамики (FRONT HPF)") {
+                                      SlideRow("Срез ФВЧ (HPF)", st.fHpf, 0f..(freqs.size - 1).toFloat(), freqs[st.fHpf.roundToInt()]) { st.fHpf = it; conn.send("F_HPF", pkt(0x32, it.roundToInt())) }
+                                      ChipsRow("Крутизна (SLOPE)", slopes, st.fSlope) { st.fSlope = it; conn.send("F_SLP", pkt(0x33, it)) }
+                                      SlideRow("Уровень (GAIN)", st.fGain, -8f..0f, "${st.fGain.roundToInt()} дБ") { st.fGain = it; conn.send("F_G", pkt(0x34, it.roundToInt())) }
+                                  }
+                              }
+                              if (!st.is3Way) item {
+                                  CardBlock("Тыловые динамики (REAR HPF)") {
+                                      SlideRow("Срез ФВЧ (HPF)", st.rHpf, 0f..(freqs.size - 1).toFloat(), freqs[st.rHpf.roundToInt()]) { st.rHpf = it; conn.send("R_HPF", pkt(0x35, it.roundToInt())) }
+                                      ChipsRow("Крутизна (SLOPE)", slopes, st.rSlope) { st.rSlope = it; conn.send("R_SLP", pkt(0x36, it)) }
+                                      SlideRow("Уровень (GAIN)", st.rGain, -8f..0f, "${st.rGain.roundToInt()} дБ") { st.rGain = it; conn.send("R_G", pkt(0x37, it.roundToInt())) }
+                                  }
+                              }
+                              item {
+                                  CardBlock("Сабвуфер (SUB.W LPF)") {
+                                      SlideRow("Срез ФНЧ (LPF)", st.swLpf, 0f..(freqs.size - 1).toFloat(), freqs[st.swLpf.roundToInt()]) { st.swLpf = it; conn.send("SW_LPF", pkt(0x38, it.roundToInt())) }
+                                      ChipsRow("Крутизна (SLOPE)", slopes, st.swSlope) { st.swSlope = it; conn.send("SW_SLP", pkt(0x39, it)) }
+                                      ToggleRow("Фаза: ${if (st.swPhaseRev) "180° (REVERSE)" else "0° (NORMAL)"}", st.swPhaseRev) { st.swPhaseRev = it; conn.send("SW_PH", pkt(0x3A, if (it) 1 else 0)) }
+                                      SlideRow("Уровень (GAIN)", st.swGain, -8f..0f, "${st.swGain.roundToInt()} дБ") { st.swGain = it; conn.send("SW_G", pkt(0x3B, it.roundToInt())) }
+                                  }
+                              }
+                          }
+                          2 -> {
+                              item {
+                                  CardBlock("Параметры PRO EQ (13 полос)") {
+                                      ToggleRow("Расширение баса (BASS EXT)", st.bassExt) { st.bassExt = it; conn.send("B_EXT", pkt(0x10, if (it) 1 else 0)) }
+                                      ChipsRow("Добротность (Q FACTOR)", listOf("1.35", "1.50", "2.00"), st.qIdx) { st.qIdx = it; conn.send("Q_FAC", pkt(0x11, it)) }
+                                      OutlinedButton(onClick = { for (i in 0..12) st.eq[i] = 0f; conn.send("EQ_RST", pkt(0x12, 0)) }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                                          Text("Сбросить эквалайзер в 0 дБ (FLAT)")
+                                      }
+                                      eqNames.forEachIndexed { idx, name ->
+                                          SlideRow(name, st.eq[idx], -9f..9f, "${st.eq[idx].roundToInt()} дБ") { st.eq[idx] = it; conn.send("EQ_$idx", pkt(0x20, idx, it.roundToInt())) }
+                                      }
+                                  }
+                              }
+                          }
+                          3 -> {
+                              item {
+                                  CardBlock("Временные задержки (DTA)") {
+                                      dtaNames.forEachIndexed { idx, name ->
+                                          val cm = st.dtaCm[idx]
+                                          SlideRow(name, cm, 0f..610f, "${cm.roundToInt()} см (${"%.2f".format(cm / 34.3f)} мс)") {
+                                              val stepCm = ((it / 2).roundToInt() * 2).toFloat()
+                                              st.dtaCm[idx] = stepCm
+                                              conn.send("DTA_$idx", pkt(0x40, idx, (stepCm / 2).toInt()))
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun SystemTab(conn: JvcConn, st: JvcState) {
+              LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                  item {
+                      CardBlock("Дисплей и Подсветка (DISPLAY)") {
+                          ToggleRow("Авто-приглушение яркости ночью (DIMMER)", st.dimmerAuto) { st.dimmerAuto = it; conn.send("DIM", pkt(0x50, if (it) 1 else 0)) }
+                          SlideRow("Яркость ДНЕМ", st.brightDay, 0f..31f, "${st.brightDay.roundToInt()}") { st.brightDay = it; conn.send("BR_D", pkt(0x51, it.roundToInt())) }
+                          SlideRow("Яркость НОЧЬЮ", st.brightNight, 0f..31f, "${st.brightNight.roundToInt()}") { st.brightNight = it; conn.send("BR_N", pkt(0x52, it.roundToInt())) }
+                          ToggleRow("Прокрутка текста треков 1 раз (SCROLL ONCE)", st.scrollOnce) { st.scrollOnce = it; conn.send("SCR", pkt(0x53, if (it) 1 else 0)) }
+                      }
+                  }
+                  item {
+                      CardBlock("Источники и Система (SYSTEM)") {
+                          ToggleRow("Отображать источник AUX", st.srcAux) { st.srcAux = it; conn.send("S_AUX", pkt(0x60, if (it) 1 else 0)) }
+                          ToggleRow("Отображать радио AM", st.srcAm) { st.srcAm = it; conn.send("S_AM", pkt(0x61, if (it) 1 else 0)) }
+                          ToggleRow("Отключить рекламный демо-режим (DEMO OFF)", st.demoOff) { st.demoOff = it; conn.send("DEMO", pkt(0x70, if (it) 1 else 0)) }
+                          ToggleRow("Звук нажатия кнопок (KEY BEEP)", st.keyBeep) { st.keyBeep = it; conn.send("BEEP", pkt(0x71, if (it) 1 else 0)) }
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun CardBlock(title: String, content: @Composable ColumnScope.() -> Unit) {
+              Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(12.dp)) {
+                  Column(modifier = Modifier.padding(16.dp)) {
+                      Text(title, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(bottom = 8.dp))
+                      content()
+                  }
+              }
+          }
+
+          @Composable
+          fun SlideRow(label: String, v: Float, range: ClosedFloatingPointRange<Float>, text: String, onChange: (Float) -> Unit) {
+              Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                  Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                      Text(label, fontSize = 13.sp)
+                      Text(text, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                  }
+                  Slider(value = v, onValueChange = onChange, valueRange = range)
+              }
+          }
+
+          @Composable
+          fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+              Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                  Text(label, fontSize = 13.sp, modifier = Modifier.weight(1f).padding(end = 8.dp))
+                  Switch(checked = checked, onCheckedChange = onChange)
+              }
+          }
+
+          @Composable
+          fun ChipsRow(title: String, opts: List<String>, sel: Int, onSelect: (Int) -> Unit) {
+              Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                  Text("$title: ${opts[sel]}", fontSize = 13.sp)
+                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                      opts.forEachIndexed { i, s -> FilterChip(selected = sel == i, onClick = { onSelect(i) }, label = { Text(s) }) }
+                  }
+              }
+          }
+          EOF
+
+      - name: 5. Build Debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: 6. Upload Ready APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: JVC-KD-X33MBT-APK
+          path: app/build/outputs/apk/debug/*.apk
