@@ -24,9 +24,11 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: 4. Generate Android Project Files
+      - name: 4. Generate Android Project & Vector Icon
         run: |
           mkdir -p app/src/main/java/com/example/jvccontroller
+          mkdir -p app/src/main/res/drawable
+          mkdir -p app/src/main/res/mipmap-anydpi-v26
 
           cat << 'EOF' > settings.gradle
           pluginManagement {
@@ -73,8 +75,8 @@ jobs:
                   applicationId "com.example.jvccontroller"
                   minSdk 26
                   targetSdk 34
-                  versionCode 1
-                  versionName "1.0"
+                  versionCode 2
+                  versionName "2.0-VisualDSP"
               }
 
               buildFeatures {
@@ -105,6 +107,46 @@ jobs:
           }
           EOF
 
+          # Создание фона адаптивной иконки приложения
+          cat << 'EOF' > app/src/main/res/drawable/ic_bg.xml
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path android:fillColor="#0A0E14" android:pathData="M0,0h108v108h-108z"/>
+              <path android:fillColor="#121E2B" android:pathData="M14,54a40,40 0 1,0 80,0a40,40 0 1,0 -80,0"/>
+          </vector>
+          EOF
+
+          # Создание переднего плана иконки (Неоновый диффузор + Графический эквалайзер)
+          cat << 'EOF' > app/src/main/res/drawable/ic_fg.xml
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path android:strokeColor="#29B6F6" android:strokeWidth="3.5" android:fillColor="#00000000"
+                  android:pathData="M24,54a30,30 0 1,0 60,0a30,30 0 1,0 -60,0"/>
+              <path android:strokeColor="#FF4081" android:strokeWidth="1.8" android:fillColor="#00000000"
+                  android:pathData="M29,54a25,25 0 1,0 50,0a25,25 0 1,0 -50,0"/>
+              <path android:fillColor="#FF4081" android:pathData="M35,52h5v16h-5z"/>
+              <path android:fillColor="#29B6F6" android:pathData="M43,41h5v27h-5z"/>
+              <path android:fillColor="#00E676" android:pathData="M51,34h6v34h-6z"/>
+              <path android:fillColor="#29B6F6" android:pathData="M60,44h5v24h-5z"/>
+              <path android:fillColor="#FFAB00" android:pathData="M68,38h5v30h-5z"/>
+          </vector>
+          EOF
+
+          # Привязка адаптивной иконки для Android 8 - Android 17
+          cat << 'EOF' > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@drawable/ic_bg"/>
+              <foreground android:drawable="@drawable/ic_fg"/>
+          </adaptive-icon>
+          EOF
+
           cat << 'EOF' > app/src/main/AndroidManifest.xml
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -117,6 +159,8 @@ jobs:
 
               <application
                   android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher"
                   android:label="JVC KD-X33MBT"
                   android:supportsRtl="true"
                   android:theme="@android:style/Theme.Material.NoActionBar">
@@ -151,6 +195,11 @@ jobs:
           import androidx.activity.compose.rememberLauncherForActivityResult
           import androidx.activity.compose.setContent
           import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.compose.foundation.Canvas
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.border
+          import androidx.compose.foundation.gestures.detectDragGestures
+          import androidx.compose.foundation.gestures.detectTapGestures
           import androidx.compose.foundation.layout.*
           import androidx.compose.foundation.lazy.LazyColumn
           import androidx.compose.foundation.shape.RoundedCornerShape
@@ -158,8 +207,16 @@ jobs:
           import androidx.compose.runtime.*
           import androidx.compose.ui.Alignment
           import androidx.compose.ui.Modifier
+          import androidx.compose.ui.geometry.CornerRadius
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.geometry.Size
+          import androidx.compose.ui.graphics.Brush
           import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.Path
+          import androidx.compose.ui.graphics.drawscope.Stroke
+          import androidx.compose.ui.input.pointer.pointerInput
           import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.text.font.FontFamily
           import androidx.compose.ui.text.font.FontWeight
           import androidx.compose.ui.unit.dp
           import androidx.compose.ui.unit.sp
@@ -261,7 +318,7 @@ jobs:
               private val prefs = ctx.getSharedPreferences("JvcPresets", Context.MODE_PRIVATE)
 
               var mode by mutableStateOf("NONE")
-              var status by mutableStateOf("Автономный режим (пресеты доступны)")
+              var status by mutableStateOf("Автономный режим (визуализация активна)")
 
               @SuppressLint("MissingPermission")
               fun pairedDevices() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
@@ -297,9 +354,7 @@ jobs:
                       usbConn = um.openDevice(dev)
                       mode = if (usbConn != null) "USB" else "NONE"
                       status = if (usbConn != null) "Подключено по USB: ${dev.productName ?: "JVC"}" else "Ошибка открытия USB"
-                  } else {
-                      status = "Переподключите USB-кабель и разрешите доступ"
-                  }
+                  } else status = "Переподключите USB-кабель и разрешите доступ"
               }
 
               fun send(cmd: String, bytes: ByteArray) {
@@ -319,15 +374,13 @@ jobs:
 
               fun savePreset(slot: Int, st: JvcState) {
                   prefs.edit().putString("slot_$slot", st.toJson()).apply()
-                  Toast.makeText(ctx, "Пресет $slot сохранен в телефон!", Toast.LENGTH_SHORT).show()
+                  Toast.makeText(ctx, "Пресет $slot сохранен!", Toast.LENGTH_SHORT).show()
               }
 
               fun loadPreset(slot: Int, st: JvcState) {
                   val s = prefs.getString("slot_$slot", null)
-                  if (s != null) {
-                      st.fromJson(s)
-                      Toast.makeText(ctx, "Пресет $slot загружен!", Toast.LENGTH_SHORT).show()
-                  } else Toast.makeText(ctx, "Слот $slot пока пуст", Toast.LENGTH_SHORT).show()
+                  if (s != null) { st.fromJson(s); Toast.makeText(ctx, "Пресет $slot загружен!", Toast.LENGTH_SHORT).show() }
+                  else Toast.makeText(ctx, "Слот $slot пока пуст", Toast.LENGTH_SHORT).show()
               }
           }
 
@@ -338,8 +391,9 @@ jobs:
                       MaterialTheme(
                           colorScheme = darkColorScheme(
                               primary = Color(0xFF29B6F6),
-                              background = Color(0xFF101214),
-                              surface = Color(0xFF1C1F24)
+                              secondary = Color(0xFFFF4081),
+                              background = Color(0xFF0B0E14),
+                              surface = Color(0xFF161B24)
                           )
                       ) {
                           Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -368,20 +422,20 @@ jobs:
 
               Column(modifier = Modifier.fillMaxSize().systemBarsPadding()) {
                   Card(
-                      modifier = Modifier.fillMaxWidth().padding(12.dp),
+                      modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                       colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                       shape = RoundedCornerShape(12.dp)
                   ) {
                       Column(modifier = Modifier.padding(12.dp)) {
                           Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                               Column(modifier = Modifier.weight(1f)) {
-                                  Text("JVC KD-X33MBT Control", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                                  Text(conn.status, fontSize = 12.sp, color = if (conn.mode != "NONE") Color(0xFF66BB6A) else Color.LightGray)
+                                  Text("JVC KD-X33MBT Visual DSP", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                  Text(conn.status, fontSize = 11.sp, color = if (conn.mode != "NONE") Color(0xFF00E676) else Color.LightGray)
                               }
                               if (conn.mode != "NONE") OutlinedButton(onClick = { conn.disconnect() }) { Text("Откл.") }
                           }
                           if (conn.mode == "NONE") {
-                              Spacer(Modifier.height(8.dp))
+                              Spacer(Modifier.height(6.dp))
                               Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                   Button(onClick = { showBtDialog = true }, modifier = Modifier.weight(1f)) { Text("Подключить BT") }
                                   OutlinedButton(onClick = { conn.connectUsb() }, modifier = Modifier.weight(1f)) { Text("Подключить USB") }
@@ -396,7 +450,7 @@ jobs:
                       }
                   }
 
-                  Box(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                  Box(modifier = Modifier.fillMaxSize().padding(10.dp)) {
                       if (mainTab == 0) SoundTab(conn, st) else SystemTab(conn, st)
                   }
               }
@@ -407,7 +461,7 @@ jobs:
                       onDismissRequest = { showBtDialog = false },
                       title = { Text("Выберите магнитолу JVC") },
                       text = {
-                          if (devs.isEmpty()) Text("Нет сопряженных устройств. Сначала подключите магнитолу в настройках Bluetooth телефона.")
+                          if (devs.isEmpty()) Text("Нет сопряженных устройств. Подключите магнитолу в настройках Bluetooth телефона.")
                           else LazyColumn {
                               items(devs.size) { i ->
                                   val d = devs[i]
@@ -422,6 +476,339 @@ jobs:
               }
           }
 
+          // ============================================================================
+          // ВИЗУАЛИЗАТОР 1: ИНТЕРФЕЙС САЛОНА АВТОМОБИЛЯ (БАЛАНС / ФЕЙДЕР / САБВУФЕР)
+          // Позволяет двигать звуковую сцену пальцем прямо по схеме машины!
+          // ============================================================================
+          @Composable
+          fun CarCabinVisualizer(st: JvcState, conn: JvcConn) {
+              Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                  Text("Сенсорная карта салона (можно двигать точку сцены пальцем)", fontSize = 11.sp, color = Color.LightGray)
+                  Spacer(Modifier.height(6.dp))
+                  Canvas(
+                      modifier = Modifier
+                          .fillMaxWidth()
+                          .height(190.dp)
+                          .background(Color(0xFF0D1117), RoundedCornerShape(12.dp))
+                          .border(1.dp, Color(0xFF263238), RoundedCornerShape(12.dp))
+                          .pointerInput(Unit) {
+                              detectDragGestures { change, _ ->
+                                  val nx = ((change.position.x / size.width) * 30f - 15f).coerceIn(-15f, 15f)
+                                  val ny = ((1f - (change.position.y / size.height)) * 30f - 15f).coerceIn(-15f, 15f)
+                                  st.balance = nx
+                                  st.fader = ny
+                                  conn.send("BAL_FAD", pkt(0x03, ny.roundToInt(), nx.roundToInt()))
+                              }
+                          }
+                  ) {
+                      val w = size.width
+                      val h = size.height
+                      val carLeft = w * 0.22f
+                      val carRight = w * 0.78f
+                      val carWidth = carRight - carLeft
+
+                      // Контур кузова автомобиля (Торпедо сверху, Багажник снизу)
+                      drawRoundRect(
+                          color = Color(0xFF1C2533),
+                          topLeft = Offset(carLeft, h * 0.06f),
+                          size = Size(carWidth, h * 0.88f),
+                          cornerRadius = CornerRadius(32f, 32f)
+                      )
+                      drawRoundRect(
+                          color = Color(0xFF37474F),
+                          topLeft = Offset(carLeft, h * 0.06f),
+                          size = Size(carWidth, h * 0.88f),
+                          cornerRadius = CornerRadius(32f, 32f),
+                          style = Stroke(width = 3f)
+                      )
+
+                      // Динамики в торпедо и стойках (Фронт)
+                      drawCircle(Color(0xFF29B6F6), radius = 10f, center = Offset(carLeft + 18f, h * 0.16f))
+                      drawCircle(Color(0xFF29B6F6), radius = 10f, center = Offset(carRight - 18f, h * 0.16f))
+
+                      // Динамики в задней полке (Тыл)
+                      drawCircle(Color(0xFF00E676), radius = 11f, center = Offset(carLeft + 22f, h * 0.72f))
+                      drawCircle(Color(0xFF00E676), radius = 11f, center = Offset(carRight - 22f, h * 0.72f))
+
+                      // Сабвуфер в багажнике и его звуковые волны
+                      val subCenter = Offset(w * 0.5f, h * 0.85f)
+                      drawRoundRect(
+                          color = if (st.subOn) Color(0xFFFF4081) else Color.DarkGray,
+                          topLeft = Offset(w * 0.42f, h * 0.79f),
+                          size = Size(w * 0.16f, h * 0.11f),
+                          cornerRadius = CornerRadius(8f, 8f)
+                      )
+                      if (st.subOn) {
+                          val power = ((st.subLvl + 50f) / 60f).coerceIn(0.1f, 1f) + (st.bassBoost * 0.08f)
+                          for (ring in 1..3) {
+                              drawCircle(
+                                  color = Color(0xFFFF4081).copy(alpha = (0.35f / ring) * power),
+                                  radius = 22f * ring * power,
+                                  center = subCenter,
+                                  style = Stroke(width = 3f)
+                              )
+                          }
+                      }
+
+                      // Точка фокуса звука (Баланс Лево/Право и Фейдер Фронт/Тыл)
+                      val fx = carLeft + ((st.balance + 15f) / 30f) * carWidth
+                      val fy = (h * 0.72f) - ((st.fader + 15f) / 30f) * (h * 0.54f)
+
+                      drawCircle(Color(0xFF00E5FF).copy(alpha = 0.22f), radius = 34f, center = Offset(fx, fy))
+                      drawLine(Color(0xFF00E5FF).copy(alpha = 0.5f), Offset(carLeft, fy), Offset(carRight, fy), strokeWidth = 1.5f)
+                      drawLine(Color(0xFF00E5FF).copy(alpha = 0.5f), Offset(fx, h * 0.1f), Offset(fx, h * 0.8f), strokeWidth = 1.5f)
+                      drawCircle(Color(0xFF00E676), radius = 11f, center = Offset(fx, fy))
+                  }
+              }
+          }
+
+          // ============================================================================
+          // ВИЗУАЛИЗАТОР 2: ГРАФИК СРЕЗОВ КРОССОВЕРА (АЧХ САБВУФЕРА, ФРОНТА, ТЫЛА, ВЧ)
+          // ============================================================================
+          @Composable
+          fun CrossoverGraphVisualizer(st: JvcState) {
+              Column {
+                  Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                      Text("Розовый: Саб", fontSize = 11.sp, color = Color(0xFFFF4081))
+                      Text("Голубой: Фронт", fontSize = 11.sp, color = Color(0xFF29B6F6))
+                      if (!st.is3Way) Text("Зеленый: Тыл", fontSize = 11.sp, color = Color(0xFF00E676))
+                      Text("Золотой: ВЧ (Твитер)", fontSize = 11.sp, color = Color(0xFFFFAB00))
+                  }
+                  Spacer(Modifier.height(4.dp))
+                  Canvas(
+                      modifier = Modifier
+                          .fillMaxWidth()
+                          .height(160.dp)
+                          .background(Color(0xFF0D1117), RoundedCornerShape(12.dp))
+                          .border(1.dp, Color(0xFF263238), RoundedCornerShape(12.dp))
+                  ) {
+                      val w = size.width
+                      val h = size.height
+
+                      // Горизонтальная сетка дБ
+                      for (i in 1..3) {
+                          val y = h * (i / 4f)
+                          drawLine(Color(0xFF1E293B), Offset(0f, y), Offset(w, y), strokeWidth = 1f)
+                      }
+
+                      // 1. Кривая ФНЧ Сабвуфера (LPF)
+                      val subCutX = (w * 0.08f) + (st.swLpf / 13f) * (w * 0.35f)
+                      val subTopY = h * 0.25f - (st.swGain / 8f) * (h * 0.2f)
+                      val subSlopeDrop = (w * 0.22f) / (st.swSlope + 1)
+                      val subPath = Path().apply {
+                          moveTo(0f, subTopY)
+                          lineTo(subCutX, subTopY)
+                          lineTo(subCutX + subSlopeDrop, h)
+                      }
+                      drawPath(subPath, Color(0xFFFF4081), style = Stroke(width = 4f))
+
+                      // 2. Кривая ФВЧ Фронта (HPF)
+                      val fCutX = (w * 0.12f) + (st.fHpf / 13f) * (w * 0.35f)
+                      val fTopY = h * 0.25f - (st.fGain / 8f) * (h * 0.2f)
+                      val fSlopeSpan = (w * 0.22f) / (st.fSlope + 1)
+                      val fPath = Path().apply {
+                          moveTo(if (st.fHpf == 0f) 0f else (fCutX - fSlopeSpan).coerceAtLeast(0f), if (st.fHpf == 0f) fTopY else h)
+                          lineTo(fCutX, fTopY)
+                          lineTo(w * 0.78f, fTopY)
+                      }
+                      drawPath(fPath, Color(0xFF29B6F6), style = Stroke(width = 4f))
+
+                      // 3. Кривая ФВЧ Тыла (в режиме 2-Way)
+                      if (!st.is3Way) {
+                          val rCutX = (w * 0.12f) + (st.rHpf / 13f) * (w * 0.35f)
+                          val rTopY = h * 0.30f - (st.rGain / 8f) * (h * 0.2f)
+                          val rSlopeSpan = (w * 0.22f) / (st.rSlope + 1)
+                          val rPath = Path().apply {
+                              moveTo(if (st.rHpf == 0f) 0f else (rCutX - rSlopeSpan).coerceAtLeast(0f), if (st.rHpf == 0f) rTopY else h)
+                              lineTo(rCutX, rTopY)
+                              lineTo(w * 0.72f, rTopY)
+                          }
+                          drawPath(rPath, Color(0xFF00E676).copy(alpha = 0.8f), style = Stroke(width = 3f))
+                      }
+
+                      // 4. Кривая ВЧ Твитеров
+                      val twCutX = (w * 0.55f) + (st.twFrq / 8f) * (w * 0.35f)
+                      val twTopY = h * 0.25f - (st.twGain / 8f) * (h * 0.2f)
+                      val twPath = Path().apply {
+                          moveTo(twCutX - w * 0.1f, h)
+                          lineTo(twCutX, twTopY)
+                          lineTo(w, twTopY)
+                      }
+                      drawPath(twPath, Color(0xFFFFAB00), style = Stroke(width = 4f))
+                  }
+              }
+          }
+
+          // ============================================================================
+          // ВИЗУАЛИЗАТОР 3: ИНТЕРАКТИВНЫЙ ГРАФИЧЕСКИЙ 13-ПОЛОСНЫЙ ЭКВАЛАЙЗЕР
+          // Проведите пальцем прямо по столбикам, чтобы нарисовать кривую эквалайзера!
+          // ============================================================================
+          @Composable
+          fun GraphicEqualizerVisualizer(st: JvcState, conn: JvcConn) {
+              Column {
+                  Text("Нарисуйте кривую АЧХ пальцем прямо по графику или ползунками ниже:", fontSize = 11.sp, color = Color.LightGray)
+                  Spacer(Modifier.height(6.dp))
+                  Canvas(
+                      modifier = Modifier
+                          .fillMaxWidth()
+                          .height(200.dp)
+                          .background(Color(0xFF0D1117), RoundedCornerShape(12.dp))
+                          .border(1.dp, Color(0xFF263238), RoundedCornerShape(12.dp))
+                          .pointerInput(Unit) {
+                              detectDragGestures { change, _ ->
+                                  val band = ((change.position.x / size.width) * 13).toInt().coerceIn(0, 12)
+                                  val db = ((0.5f - (change.position.y / size.height)) * 18f).coerceIn(-9f, 9f)
+                                  st.eq[band] = db.roundToInt().toFloat()
+                                  conn.send("EQ_$band", pkt(0x20, band, db.roundToInt()))
+                              }
+                          }
+                          .pointerInput(Unit) {
+                              detectTapGestures { offset ->
+                                  val band = ((offset.x / size.width) * 13).toInt().coerceIn(0, 12)
+                                  val db = ((0.5f - (offset.y / size.height)) * 18f).coerceIn(-9f, 9f)
+                                  st.eq[band] = db.roundToInt().toFloat()
+                                  conn.send("EQ_$band", pkt(0x20, band, db.roundToInt()))
+                              }
+                          }
+                  ) {
+                      val w = size.width
+                      val h = size.height
+                      val midY = h * 0.5f
+                      val colW = w / 13f
+
+                      // Линия 0 дБ по центру
+                      drawLine(Color(0xFF37474F), Offset(0f, midY), Offset(w, midY), strokeWidth = 2f)
+
+                      val curvePath = Path()
+                      val fillPath = Path()
+
+                      for (i in 0..12) {
+                          val cx = colW * i + colW * 0.5f
+                          val cy = midY - (st.eq[i] / 9f) * (h * 0.42f)
+
+                          // Вертикальный столбик полосы
+                          val barTop = minOf(midY, cy)
+                          val barH = kotlin.math.abs(cy - midY).coerceAtLeast(4f)
+                          val barColor = if (i < 3 && st.bassExt) Color(0xFFFF4081) else Color(0xFF29B6F6)
+
+                          drawRoundRect(
+                              color = barColor.copy(alpha = 0.35f),
+                              topLeft = Offset(cx - colW * 0.28f, barTop),
+                              size = Size(colW * 0.56f, barH),
+                              cornerRadius = CornerRadius(6f, 6f)
+                          )
+
+                          if (i == 0) {
+                              curvePath.moveTo(cx, cy)
+                              fillPath.moveTo(cx, h)
+                              fillPath.lineTo(cx, cy)
+                          } else {
+                              curvePath.lineTo(cx, cy)
+                              fillPath.lineTo(cx, cy)
+                          }
+                          if (i == 12) fillPath.lineTo(cx, h)
+                      }
+                      fillPath.close()
+
+                      // Светящаяся заливка под кривой эквалайзера
+                      drawPath(
+                          path = fillPath,
+                          brush = Brush.verticalGradient(
+                              colors = listOf(Color(0xFF29B6F6).copy(alpha = 0.35f), Color.Transparent)
+                          )
+                      )
+
+                      // Огибающая линия АЧХ (толщина зависит от выбранного Q-Factor)
+                      val strokeW = (5f - st.qIdx * 1.2f).coerceAtLeast(2.5f)
+                      drawPath(curvePath, Color(0xFF00E5FF), style = Stroke(width = strokeW))
+
+                      // Светящиеся точки на вершинах 13 полос
+                      for (i in 0..12) {
+                          val cx = colW * i + colW * 0.5f
+                          val cy = midY - (st.eq[i] / 9f) * (h * 0.42f)
+                          drawCircle(Color(0xFF00E676), radius = 8f, center = Offset(cx, cy))
+                      }
+                  }
+              }
+          }
+
+          // ============================================================================
+          // ВИЗУАЛИЗАТОР 4: КАРТА ВРЕМЕННЫХ ЗАДЕРЖЕК (ВОЛНЫ ДО ВОДИТЕЛЯ)
+          // ============================================================================
+          @Composable
+          fun DtaWavesVisualizer(st: JvcState) {
+              Canvas(
+                  modifier = Modifier
+                      .fillMaxWidth()
+                      .height(140.dp)
+                      .background(Color(0xFF0D1117), RoundedCornerShape(12.dp))
+                      .border(1.dp, Color(0xFF263238), RoundedCornerShape(12.dp))
+              ) {
+                  val w = size.width
+                  val h = size.height
+                  val driverHead = Offset(w * 0.36f, h * 0.38f)
+
+                  val spkPositions = listOf(
+                      Offset(w * 0.25f, h * 0.15f), // Фронт Л
+                      Offset(w * 0.75f, h * 0.15f), // Фронт П
+                      Offset(w * 0.25f, h * 0.75f), // Тыл Л
+                      Offset(w * 0.75f, h * 0.75f), // Тыл П
+                      Offset(w * 0.50f, h * 0.90f)  // Сабвуфер
+                  )
+
+                  spkPositions.forEachIndexed { idx, pos ->
+                      val norm = (st.dtaCm[idx] / 610f).coerceIn(0.05f, 1f)
+                      drawLine(
+                          color = Color(0xFF29B6F6).copy(alpha = 0.25f + norm * 0.5f),
+                          start = pos,
+                          end = driverHead,
+                          strokeWidth = 2f + norm * 4f
+                      )
+                      drawCircle(Color(0xFF29B6F6), radius = 9f, center = pos)
+                  }
+                  // Точка головы водителя
+                  drawCircle(Color(0xFF00E676).copy(alpha = 0.3f), radius = 22f, center = driverHead)
+                  drawCircle(Color(0xFF00E676), radius = 10f, center = driverHead)
+              }
+          }
+
+          // ============================================================================
+          // ВИЗУАЛИЗАТОР 5: ВИРТУАЛЬНЫЙ ЭКРАН МАГНИТОЛЫ JVC KD-X33MBT
+          // ============================================================================
+          @Composable
+          fun JvcLcdScreenPreview(st: JvcState) {
+              val activeBright = if (st.dimmerAuto) st.brightNight else st.brightDay
+              val alpha = (0.25f + (activeBright / 31f) * 0.75f).coerceIn(0.25f, 1f)
+              val lcdText = if (!st.demoOff) "DEMO: 13-BAND EQ / K2" else "JVC BT AUDIO  [2-WAY]"
+
+              Box(
+                  modifier = Modifier
+                      .fillMaxWidth()
+                      .background(Color(0xFF05070A), RoundedCornerShape(12.dp))
+                      .border(2.dp, Color(0xFF29B6F6).copy(alpha = alpha), RoundedCornerShape(12.dp))
+                      .padding(16.dp),
+                  contentAlignment = Alignment.Center
+              ) {
+                  Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                      Text(
+                          text = lcdText,
+                          fontFamily = FontFamily.Monospace,
+                          fontSize = 18.sp,
+                          fontWeight = FontWeight.Bold,
+                          color = Color(0xFF40C4FF).copy(alpha = alpha)
+                      )
+                      Spacer(Modifier.height(4.dp))
+                      Text(
+                          text = "DIMMER: ${if (st.dimmerAuto) "NIGHT (${st.brightNight.roundToInt()})" else "DAY (${st.brightDay.roundToInt()})"}" +
+                                  " | SCROLL: ${if (st.scrollOnce) "ONCE" else "AUTO"}",
+                          fontFamily = FontFamily.Monospace,
+                          fontSize = 11.sp,
+                          color = Color(0xFF80D8FF).copy(alpha = alpha)
+                      )
+                  }
+              }
+          }
+
           @Composable
           fun SoundTab(conn: JvcConn, st: JvcState) {
               val freqs = listOf("THROUGH", "30 Гц", "40 Гц", "50 Гц", "60 Гц", "70 Гц", "80 Гц", "90 Гц", "100 Гц", "120 Гц", "150 Гц", "180 Гц", "220 Гц", "250 Гц")
@@ -433,14 +820,27 @@ jobs:
               var subTab by remember { mutableIntStateOf(0) }
               Column(modifier = Modifier.fillMaxSize()) {
                   ScrollableTabRow(selectedTabIndex = subTab, containerColor = Color.Transparent, edgePadding = 0.dp) {
-                      listOf("Пресеты & База", "Кроссовер", "Эквалайзер (13)", "Задержки (DTA)").forEachIndexed { i, title ->
+                      listOf("Сцена & Пресеты", "Кроссовер (График)", "Графический EQ", "Задержки (DTA)").forEachIndexed { i, title ->
                           FilterChip(selected = subTab == i, onClick = { subTab = i }, label = { Text(title) }, modifier = Modifier.padding(end = 6.dp))
                       }
                   }
-                  Spacer(Modifier.height(8.dp))
-                  LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                  Spacer(Modifier.height(6.dp))
+                  LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                       when (subTab) {
                           0 -> {
+                              item {
+                                  CardBlock("Интерактивная звуковая сцена автомобиля") {
+                                      CarCabinVisualizer(st, conn)
+                                      Spacer(Modifier.height(8.dp))
+                                      ToggleRow("Выход сабвуфера (SUB-W)", st.subOn) { st.subOn = it; conn.send("SUB_ON", pkt(0x01, if (it) 1 else 0)) }
+                                      if (st.subOn) SlideRow("Уровень сабвуфера", st.subLvl, -50f..10f, "${st.subLvl.roundToInt()} дБ") { st.subLvl = it; conn.send("SUB_LVL", pkt(0x02, it.roundToInt())) }
+                                      SlideRow("Фейдер (Тыл R <-> Фронт F)", st.fader, -15f..15f, "${st.fader.roundToInt()}") { st.fader = it; conn.send("FADER", pkt(0x03, it.roundToInt())) }
+                                      SlideRow("Баланс (Лево L <-> Право R)", st.balance, -15f..15f, "${st.balance.roundToInt()}") { st.balance = it; conn.send("BAL", pkt(0x04, it.roundToInt())) }
+                                      SlideRow("Усиление баса (BASS BOOST)", st.bassBoost.toFloat(), 0f..5f, "LV${st.bassBoost}") { st.bassBoost = it.roundToInt(); conn.send("BASS", pkt(0x05, st.bassBoost)) }
+                                      SlideRow("Тонкомпенсация (LOUDNESS)", st.loudness.toFloat(), 0f..2f, "LV${st.loudness}") { st.loudness = it.roundToInt(); conn.send("LOUD", pkt(0x06, st.loudness)) }
+                                      ToggleRow("Технология K2", st.k2Tech) { st.k2Tech = it; conn.send("K2", pkt(0x07, if (it) 1 else 0)) }
+                                  }
+                              }
                               item {
                                   CardBlock("Мои пресеты в памяти телефона") {
                                       for (slot in 1..3) {
@@ -451,46 +851,37 @@ jobs:
                                       }
                                   }
                               }
-                              item {
-                                  CardBlock("Сабвуфер, Баланс и Улучшения") {
-                                      ToggleRow("Выход сабвуфера (SUB-W)", st.subOn) { st.subOn = it; conn.send("SUB_ON", pkt(0x01, if (it) 1 else 0)) }
-                                      if (st.subOn) SlideRow("Уровень сабвуфера", st.subLvl, -50f..10f, "${st.subLvl.roundToInt()} дБ") { st.subLvl = it; conn.send("SUB_LVL", pkt(0x02, it.roundToInt())) }
-                                      SlideRow("Фейдер (Тыл R <-> Фронт F)", st.fader, -15f..15f, "${st.fader.roundToInt()}") { st.fader = it; conn.send("FADER", pkt(0x03, it.roundToInt())) }
-                                      SlideRow("Баланс (Лево L <-> Право R)", st.balance, -15f..15f, "${st.balance.roundToInt()}") { st.balance = it; conn.send("BAL", pkt(0x04, it.roundToInt())) }
-                                      SlideRow("Усиление баса (BASS BOOST)", st.bassBoost.toFloat(), 0f..5f, "LV${st.bassBoost}") { st.bassBoost = it.roundToInt(); conn.send("BASS", pkt(0x05, st.bassBoost)) }
-                                      SlideRow("Тонкомпенсация (LOUDNESS)", st.loudness.toFloat(), 0f..2f, "LV${st.loudness}") { st.loudness = it.roundToInt(); conn.send("LOUD", pkt(0x06, st.loudness)) }
-                                      ToggleRow("Технология K2", st.k2Tech) { st.k2Tech = it; conn.send("K2", pkt(0x07, if (it) 1 else 0)) }
-                                  }
-                              }
                           }
                           1 -> {
                               item {
-                                  CardBlock("Режим кроссовера (X'OVER)") {
+                                  CardBlock("Живой график АЧХ кроссовера (X'OVER)") {
+                                      CrossoverGraphVisualizer(st)
+                                      Spacer(Modifier.height(6.dp))
                                       ToggleRow(if (st.is3Way) "Режим: 3-Way (Поканальный)" else "Режим: 2-Way (Стандартный)", st.is3Way) { st.is3Way = it; conn.send("XMODE", pkt(0x15, if (it) 1 else 0)) }
                                   }
                               }
                               item {
-                                  CardBlock("Твитеры (FRONT TW)") {
+                                  CardBlock("Твитеры (FRONT TW - Золотая линия)") {
                                       SlideRow("Частота среза (FRQ)", st.twFrq, 0f..(twFreqs.size - 1).toFloat(), twFreqs[st.twFrq.roundToInt()]) { st.twFrq = it; conn.send("TW_F", pkt(0x30, it.roundToInt())) }
                                       SlideRow("Уровень (GAIN)", st.twGain, -8f..0f, "${st.twGain.roundToInt()} дБ") { st.twGain = it; conn.send("TW_G", pkt(0x31, it.roundToInt())) }
                                   }
                               }
                               item {
-                                  CardBlock("Фронтальные динамики (FRONT HPF)") {
+                                  CardBlock("Фронтальные динамики (FRONT HPF - Голубая линия)") {
                                       SlideRow("Срез ФВЧ (HPF)", st.fHpf, 0f..(freqs.size - 1).toFloat(), freqs[st.fHpf.roundToInt()]) { st.fHpf = it; conn.send("F_HPF", pkt(0x32, it.roundToInt())) }
                                       ChipsRow("Крутизна (SLOPE)", slopes, st.fSlope) { st.fSlope = it; conn.send("F_SLP", pkt(0x33, it)) }
                                       SlideRow("Уровень (GAIN)", st.fGain, -8f..0f, "${st.fGain.roundToInt()} дБ") { st.fGain = it; conn.send("F_G", pkt(0x34, it.roundToInt())) }
                                   }
                               }
                               if (!st.is3Way) item {
-                                  CardBlock("Тыловые динамики (REAR HPF)") {
+                                  CardBlock("Тыловые динамики (REAR HPF - Зеленая линия)") {
                                       SlideRow("Срез ФВЧ (HPF)", st.rHpf, 0f..(freqs.size - 1).toFloat(), freqs[st.rHpf.roundToInt()]) { st.rHpf = it; conn.send("R_HPF", pkt(0x35, it.roundToInt())) }
                                       ChipsRow("Крутизна (SLOPE)", slopes, st.rSlope) { st.rSlope = it; conn.send("R_SLP", pkt(0x36, it)) }
                                       SlideRow("Уровень (GAIN)", st.rGain, -8f..0f, "${st.rGain.roundToInt()} дБ") { st.rGain = it; conn.send("R_G", pkt(0x37, it.roundToInt())) }
                                   }
                               }
                               item {
-                                  CardBlock("Сабвуфер (SUB.W LPF)") {
+                                  CardBlock("Сабвуфер (SUB.W LPF - Розовая линия)") {
                                       SlideRow("Срез ФНЧ (LPF)", st.swLpf, 0f..(freqs.size - 1).toFloat(), freqs[st.swLpf.roundToInt()]) { st.swLpf = it; conn.send("SW_LPF", pkt(0x38, it.roundToInt())) }
                                       ChipsRow("Крутизна (SLOPE)", slopes, st.swSlope) { st.swSlope = it; conn.send("SW_SLP", pkt(0x39, it)) }
                                       ToggleRow("Фаза: ${if (st.swPhaseRev) "180° (REVERSE)" else "0° (NORMAL)"}", st.swPhaseRev) { st.swPhaseRev = it; conn.send("SW_PH", pkt(0x3A, if (it) 1 else 0)) }
@@ -500,7 +891,9 @@ jobs:
                           }
                           2 -> {
                               item {
-                                  CardBlock("Параметры PRO EQ (13 полос)") {
+                                  CardBlock("Графический эквалайзер PRO EQ (13 полос)") {
+                                      GraphicEqualizerVisualizer(st, conn)
+                                      Spacer(Modifier.height(8.dp))
                                       ToggleRow("Расширение баса (BASS EXT)", st.bassExt) { st.bassExt = it; conn.send("B_EXT", pkt(0x10, if (it) 1 else 0)) }
                                       ChipsRow("Добротность (Q FACTOR)", listOf("1.35", "1.50", "2.00"), st.qIdx) { st.qIdx = it; conn.send("Q_FAC", pkt(0x11, it)) }
                                       OutlinedButton(onClick = { for (i in 0..12) st.eq[i] = 0f; conn.send("EQ_RST", pkt(0x12, 0)) }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
@@ -514,7 +907,9 @@ jobs:
                           }
                           3 -> {
                               item {
-                                  CardBlock("Временные задержки (DTA)") {
+                                  CardBlock("Временные задержки и карта волн (DTA)") {
+                                      DtaWavesVisualizer(st)
+                                      Spacer(Modifier.height(8.dp))
                                       dtaNames.forEachIndexed { idx, name ->
                                           val cm = st.dtaCm[idx]
                                           SlideRow(name, cm, 0f..610f, "${cm.roundToInt()} см (${"%.2f".format(cm / 34.3f)} мс)") {
@@ -535,8 +930,10 @@ jobs:
           fun SystemTab(conn: JvcConn, st: JvcState) {
               LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                   item {
-                      CardBlock("Дисплей и Подсветка (DISPLAY)") {
-                          ToggleRow("Авто-приглушение яркости ночью (DIMMER)", st.dimmerAuto) { st.dimmerAuto = it; conn.send("DIM", pkt(0x50, if (it) 1 else 0)) }
+                      CardBlock("Предпросмотр экрана магнитолы (DISPLAY)") {
+                          JvcLcdScreenPreview(st)
+                          Spacer(Modifier.height(8.dp))
+                          ToggleRow("Ночной режим яркости (DIMMER)", st.dimmerAuto) { st.dimmerAuto = it; conn.send("DIM", pkt(0x50, if (it) 1 else 0)) }
                           SlideRow("Яркость ДНЕМ", st.brightDay, 0f..31f, "${st.brightDay.roundToInt()}") { st.brightDay = it; conn.send("BR_D", pkt(0x51, it.roundToInt())) }
                           SlideRow("Яркость НОЧЬЮ", st.brightNight, 0f..31f, "${st.brightNight.roundToInt()}") { st.brightNight = it; conn.send("BR_N", pkt(0x52, it.roundToInt())) }
                           ToggleRow("Прокрутка текста треков 1 раз (SCROLL ONCE)", st.scrollOnce) { st.scrollOnce = it; conn.send("SCR", pkt(0x53, if (it) 1 else 0)) }
@@ -556,7 +953,7 @@ jobs:
           @Composable
           fun CardBlock(title: String, content: @Composable ColumnScope.() -> Unit) {
               Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(12.dp)) {
-                  Column(modifier = Modifier.padding(16.dp)) {
+                  Column(modifier = Modifier.padding(14.dp)) {
                       Text(title, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(bottom = 8.dp))
                       content()
                   }
@@ -565,7 +962,7 @@ jobs:
 
           @Composable
           fun SlideRow(label: String, v: Float, range: ClosedFloatingPointRange<Float>, text: String, onChange: (Float) -> Unit) {
-              Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+              Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
                   Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                       Text(label, fontSize = 13.sp)
                       Text(text, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
@@ -576,7 +973,7 @@ jobs:
 
           @Composable
           fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-              Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+              Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                   Text(label, fontSize = 13.sp, modifier = Modifier.weight(1f).padding(end = 8.dp))
                   Switch(checked = checked, onCheckedChange = onChange)
               }
@@ -584,7 +981,7 @@ jobs:
 
           @Composable
           fun ChipsRow(title: String, opts: List<String>, sel: Int, onSelect: (Int) -> Unit) {
-              Column(modifier = Modifier.padding(vertical = 4.dp)) {
+              Column(modifier = Modifier.padding(vertical = 2.dp)) {
                   Text("$title: ${opts[sel]}", fontSize = 13.sp)
                   Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                       opts.forEachIndexed { i, s -> FilterChip(selected = sel == i, onClick = { onSelect(i) }, label = { Text(s) }) }
@@ -599,5 +996,5 @@ jobs:
       - name: 6. Upload Ready APK
         uses: actions/upload-artifact@v4
         with:
-          name: JVC-KD-X33MBT-APK
+          name: JVC-KD-X33MBT-VisualDSP-APK
           path: app/build/outputs/apk/debug/*.apk
